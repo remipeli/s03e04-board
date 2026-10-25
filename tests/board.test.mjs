@@ -47,21 +47,72 @@ test('SCHED-4513: the board polls about every 2 seconds', async () => {
   await page.close();
 });
 
-test('SCHED-4511: Ack acks that incident, and the mark survives the next refresh', async () => {
+test('SCHED-4515: Ack asks to confirm, names the incident, and acks only after confirm', async () => {
   const page = await browser.newPage();
   const calls = await fakeApi(page, () => [B, A]);
   await page.goto(server.url);
   const row = page.locator('[data-testid="incident-row"][data-id="INC-1"]');
   await row.getByTestId('ack').click();
+  const confirm = page.getByTestId('confirm');
+  await confirm.waitFor({ state: 'visible' });
+  assert.match(await confirm.innerText(), /Ack INC-1\?/);
+  assert.equal(calls.acks.length, 0, 'no ack before confirm');
+  await page.getByTestId('confirm-ack').click();
   await row.getByTestId('acked').waitFor();
   assert.equal(calls.acks.length, 1);
   assert.equal(calls.acks[0].searchParams.get('id'), 'INC-1');
   assert.ok(calls.acks[0].searchParams.get('cursor'), 'the ack sends the latest cursor');
+  assert.ok(!(await confirm.isVisible()));
   const polls = calls.incidents.length;
   await page.waitForTimeout(2500);
   assert.ok(calls.incidents.length > polls, 'a refresh ran after the ack');
   assert.equal(await row.getByTestId('acked').count(), 1);
   assert.equal(await row.getByTestId('ack').count(), 0);
+  await page.close();
+});
+
+test('SCHED-4515: Cancel (button or Escape) sends no ack', async () => {
+  const page = await browser.newPage();
+  const calls = await fakeApi(page, () => [B, A]);
+  await page.goto(server.url);
+  const row = page.locator('[data-testid="incident-row"][data-id="INC-2"]');
+  await row.getByTestId('ack').click();
+  await page.getByTestId('confirm-cancel').click();
+  await row.getByTestId('ack').click();
+  await page.getByTestId('confirm').waitFor({ state: 'visible' });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  assert.equal(calls.acks.length, 0);
+  assert.equal(await row.getByTestId('ack').count(), 1);
+  await page.close();
+});
+
+test('SCHED-4515: the confirm keeps its incident while the list moves under it', async () => {
+  const page = await browser.newPage();
+  const calls = await fakeApi(page, (n) => (n < 1 ? [B, A] : [C, B, A]));
+  await page.goto(server.url);
+  await page.locator('[data-testid="incident-row"][data-id="INC-2"] [data-testid="ack"]').click();
+  await page.locator('[data-testid="incident-row"][data-id="INC-3"]').waitFor({ timeout: 4000 });
+  assert.match(await page.getByTestId('confirm').innerText(), /Ack INC-2\?/);
+  await page.getByTestId('confirm-ack').click();
+  await page.locator('[data-testid="incident-row"][data-id="INC-2"] [data-testid="acked"]').waitFor();
+  assert.deepEqual(calls.acks.map((u) => u.searchParams.get('id')), ['INC-2']);
+  await page.close();
+});
+
+test('SCHED-4511: a refresh adds rows without taking rows off the page', async () => {
+  const page = await browser.newPage();
+  await page.addInitScript(() => {
+    window.__removed = 0;
+    new MutationObserver((records) => {
+      for (const r of records) for (const n of r.removedNodes) if (n.nodeType === 1 && n.matches('[data-testid="incident-row"]')) window.__removed++;
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await fakeApi(page, (n) => (n < 2 ? [B, A] : [C, B, A]));
+  await page.goto(server.url);
+  await page.locator('[data-testid="incident-row"][data-id="INC-3"]').waitFor({ timeout: 6000 });
+  await page.waitForTimeout(2200);
+  assert.equal(await page.evaluate(() => window.__removed), 0);
   await page.close();
 });
 

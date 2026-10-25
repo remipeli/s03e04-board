@@ -6,6 +6,7 @@ const list = document.querySelector('[data-testid="incident-list"]');
 const loader = document.querySelector('[data-testid="loader"]');
 const empty = document.querySelector('[data-testid="empty"]');
 const error = document.querySelector('.error');
+const confirmBox = document.querySelector('[data-testid="confirm"]');
 
 // R5: the viewer's own locale and time zone decide the zone and the day/month order.
 const localTime = new Intl.DateTimeFormat(undefined, {
@@ -50,6 +51,25 @@ async function onAck(id, li, button) {
   }
 }
 
+// Product, after step one: Ack asks to confirm, and the confirm names the incident. The list keeps
+// moving while the confirm is open, so the confirm holds the id it was opened for, not a row position.
+let pending = null; // { id, li, button }
+
+function askToAck(incident, li, button) {
+  pending = { id: incident.id, li, button };
+  for (const el of confirmBox.querySelectorAll('.confirm-id')) el.textContent = incident.id;
+  confirmBox.querySelector('.confirm-what').textContent =
+    `${incident.severity} · ${incident.service} · ${incident.region} · ${incident.summary}`;
+  confirmBox.returnValue = '';
+  confirmBox.showModal(); // focus lands on Cancel, so a second Enter or click does not ack blind
+}
+
+confirmBox.addEventListener('close', () => {
+  const asked = pending;
+  pending = null;
+  if (asked && confirmBox.returnValue === 'ack') onAck(asked.id, asked.li, asked.button);
+});
+
 function rowFor(incident) {
   let li = rows.get(incident.id);
   if (li) return li;
@@ -78,7 +98,7 @@ function rowFor(incident) {
     button.type = 'button';
     button.dataset.testid = 'ack';
     button.textContent = 'Ack';
-    button.addEventListener('click', () => onAck(incident.id, li, button));
+    button.addEventListener('click', () => askToAck(incident, li, button));
     li.append(button);
   }
 
@@ -86,9 +106,18 @@ function rowFor(incident) {
   return li;
 }
 
-// R1: the API answers newest first, so new incidents land at the top.
+// R1: the API answers newest first, so new incidents land at the top. Rows already on screen stay in the
+// DOM: new ones are inserted above them, and only rows the API no longer lists are removed.
 function render(incidents) {
-  list.replaceChildren(...incidents.map(rowFor));
+  incidents.forEach((incident, index) => {
+    const li = rowFor(incident);
+    const here = list.children[index];
+    if (li !== here) list.insertBefore(li, here ?? null);
+  });
+  for (const stale of [...list.children].slice(incidents.length)) {
+    rows.delete(stale.dataset.id);
+    stale.remove();
+  }
   empty.hidden = incidents.length > 0;
 }
 
